@@ -1,26 +1,28 @@
-
-#ifndef __AP_HAL_LINUX_RCINPUT_ZYNQ_H__
-#define __AP_HAL_LINUX_RCINPUT_ZYNQ_H__
+#pragma once
 
 /*
   This class implements RCInput on the ZYNQ / ZyboPilot platform with custom
   logic doing the edge detection of the PPM sum input
  */
 
-#include <AP_HAL_Linux.h>
+#include "RCInput.h"
 
-// FIXME A puppie dies when you hard code an address
-#define RCIN_ZYNQ_PULSE_INPUT_BASE  0x43c10000
+#if AP_RCPROTOCOL_ZYNQ_ENABLED
 
-class Linux::LinuxRCInput_ZYNQ : public Linux::LinuxRCInput 
-{
+#ifndef RCIN_ZYNQ_TICK_PER_US
+#define RCIN_ZYNQ_TICK_PER_US 100
+#endif
+
+namespace Linux {
+
+class RCInput_ZYNQ : public RCInput {
 public:
-    void init(void*);
-    void _timer_tick(void);
+    void init() override;
+    void _timer_tick(void) override;
 
- private:
-    static const int TICK_PER_US=100;
-    static const int TICK_PER_S=100000000;
+private:
+    static const int TICK_PER_US = RCIN_ZYNQ_TICK_PER_US;
+    static const int TICK_PER_S = RCIN_ZYNQ_TICK_PER_US * 1e6;
 
     // Memory mapped keyhole register to pulse input FIFO
     volatile uint32_t *pulse_input;
@@ -29,4 +31,6 @@ public:
     uint32_t _s0_time;
 };
 
-#endif // __AP_HAL_LINUX_RCINPUT_ZYNQ_H__
+}
+
+#endif  // AP_RCPROTOCOL_ZYNQ_ENABLED

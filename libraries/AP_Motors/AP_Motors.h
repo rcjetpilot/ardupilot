@@ -1,18 +1,23 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
+#pragma once
 
-#ifndef __AP_MOTORS_H__
-#define __AP_MOTORS_H__
+#include "AP_Motors_config.h"
+
+#if AP_MOTORS_ENABLED
 
 #include "AP_Motors_Class.h"
+#include "AP_MotorsMulticopter.h"
 #include "AP_MotorsMatrix.h"
+#if AP_MOTORS_TRI_ENABLED
 #include "AP_MotorsTri.h"
-#include "AP_MotorsQuad.h"
-#include "AP_MotorsHexa.h"
-#include "AP_MotorsY6.h"
-#include "AP_MotorsOcta.h"
-#include "AP_MotorsOctaQuad.h"
-#include "AP_MotorsHeli.h"
+#endif  // AP_MOTORS_TRI_ENABLED
+#include "AP_MotorsHeli_Single.h"
+#include "AP_MotorsHeli_Dual.h"
+#include "AP_MotorsHeli_Quad.h"
 #include "AP_MotorsSingle.h"
 #include "AP_MotorsCoax.h"
+#include "AP_MotorsTailsitter.h"
+#include "AP_Motors6DOF.h"
+#include "AP_MotorsMatrix_6DoF_Scripting.h"
+#include "AP_MotorsMatrix_Scripting_Dynamic.h"
 
-#endif // __AP_MOTORS_H__
+#endif  // AP_MOTORS_ENABLED

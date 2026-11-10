@@ -8,30 +8,39 @@
 // GNU General Public License for more details.
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
-
-
-#ifndef __AP_HAL_LINUX_RCINPUT_AIOPRU_H__
-#define __AP_HAL_LINUX_RCINPUT_AIOPRU_H__
+#pragma once
 
 /*
   This class implements RCInput on the BeagleBoneBlack with a PRU
   doing the edge detection of the PPM sum input
  */
 
-#include <AP_HAL_Linux.h>
+#include "AP_HAL_Linux.h"
 
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_POCKET
+#define RCIN_PRUSS_RAM_BASE   0x4a301000
+#elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_POCKET2
+#define RCIN_PRUSS_RAM_BASE   0x30041000
+#else
 #define RCIN_PRUSS_RAM_BASE   0x4a303000
+#endif
+
 // we use 300 ring buffer entries to guarantee that a full 25 byte
 // frame of 12 bits per byte
 
-class Linux::LinuxRCInput_AioPRU : public Linux::LinuxRCInput 
-{
-public:
-    void init(void*);
-    void _timer_tick(void);
+namespace Linux {
 
- private:
+class RCInput_AioPRU : public RCInput {
+public:
+    void init() override;
+    void _timer_tick(void) override;
+
+protected:
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_POCKET2
+    static const uint32_t TICK_PER_US = 250;
+#else
     static const uint32_t TICK_PER_US = 200;
+#endif
     static const uint32_t NUM_RING_ENTRIES = 300;
     // shared ring buffer with the PRU which records pin transitions
     struct ring_buffer {
@@ -45,4 +54,4 @@ public:
     volatile struct ring_buffer *ring_buffer;
 };
 
-#endif // __AP_HAL_LINUX_RCINPUT_AIOPRU_H__
+}

@@ -1,83 +1,117 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 #include "Copter.h"
 
 // Code to integrate AC_Fence library with main ArduCopter code
 
-#if AC_FENCE == ENABLED
+#if AP_FENCE_ENABLED
 
-// fence_check - ask fence library to check for breaches and initiate the response
-// called at 1hz
-void Copter::fence_check()
+// async fence checking io callback at 1Khz
+void Copter::fence_checks_async()
 {
-    uint8_t new_breaches; // the type of fence that has been breached
-    uint8_t orig_breaches = fence.get_breaches();
+    const uint32_t now = AP_HAL::millis();
 
-    // return immediately if motors are not armed
-    if(!motors.armed()) {
+    if (!AP_HAL::timeout_expired(fence_breaches.last_check_ms, now, 40U)) { // 25Hz update rate
         return;
     }
 
-    // give fence library our current distance from home in meters
-    fence.set_home_distance(home_distance*0.01f);
+    if (fence_breaches.have_updates) {
+        return; // wait for the main loop to pick up the new breaches before checking again
+    }
 
-    // check for a breach
-    new_breaches = fence.check_fence(current_loc.alt/100.0f);
+    fence_breaches.last_check_ms = now;
+    const uint8_t orig_breaches = fence.get_breaches();
+    bool is_landing_or_landed = flightmode->is_landing() || ap.land_complete  || !motors->armed();
 
-    // if there is a new breach take action
-    if( new_breaches != AC_FENCE_TYPE_NONE ) {
+    // check for new breaches; new_breaches is bitmask of fence types breached
+    fence_breaches.new_breaches = fence.check(is_landing_or_landed);
+
+    if (!fence_breaches.new_breaches && orig_breaches && fence.get_breaches() == 0) {
+        if (!copter.ap.land_complete) {
+            GCS_SEND_TEXT(MAV_SEVERITY_NOTICE, "Fence breach cleared");
+        }
+        // record clearing of breach
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::FAILSAFE_FENCE, LogErrorCode::ERROR_RESOLVED);
+    }
+    fence_breaches.have_updates = true; // new breach status latched so main loop will now pick it up
+}
+
+// fence_check - ask fence library to check for breaches and initiate the response
+// called at 25hz
+void Copter::fence_check()
+{
+    // only take action if there is a new breach
+    if (!fence_breaches.have_updates) {
+        return;
+    }
+
+    // we still don't do anything when disarmed, but we do check for fence breaches.
+    // fence pre-arm check actually checks if any fence has been breached 
+    // that's not ever going to be true if we don't call check on AP_Fence while disarmed.
+    if (!motors->armed()) {
+        fence_breaches.have_updates = false; // fence checking can now be processed again
+        return;
+    }
+
+    if (fence_breaches.new_breaches) {
+
+        if (!copter.ap.land_complete) {
+            fence.print_fence_message("breached", fence_breaches.new_breaches);
+        }
 
         // if the user wants some kind of response and motors are armed
-        if(fence.get_action() != AC_FENCE_ACTION_REPORT_ONLY ) {
+        const auto fence_act = fence.get_action();
+        if (fence_act != AC_Fence::Action::REPORT_ONLY ) {
 
             // disarm immediately if we think we are on the ground or in a manual flight mode with zero throttle
             // don't disarm if the high-altitude fence has been broken because it's likely the user has pulled their throttle to zero to bring it down
-            if (ap.land_complete || (mode_has_manual_throttle(control_mode) && ap.throttle_zero && !failsafe.radio && ((fence.get_breaches() & AC_FENCE_TYPE_ALT_MAX)== 0))){
-                init_disarm_motors();
-            }else{
-                // if we are within 100m of the fence, RTL
-                if (fence.get_breach_distance(new_breaches) <= AC_FENCE_GIVE_UP_DISTANCE) {
-                    if (!set_mode(RTL)) {
-                        set_mode(LAND);
+            if (ap.land_complete || (flightmode->has_manual_throttle() && ap.throttle_zero && !failsafe.radio && ((fence.get_breaches() & AC_FENCE_TYPE_ALT_MAX)== 0))){
+                arming.disarm(AP_Arming::Method::FENCEBREACH);
+
+            } else {
+
+                // if more than 100m outside the fence just force a land
+                if (fence.get_breach_distance(fence_breaches.new_breaches) > AC_FENCE_GIVE_UP_DISTANCE) {
+                    set_mode(Mode::Number::LAND, ModeReason::FENCE_BREACHED);
+                } else {
+                    switch (fence_act) {
+                    case AC_Fence::Action::RTL_AND_LAND:
+                    default:
+                        // switch to RTL, if that fails then Land
+                        if (!set_mode(Mode::Number::RTL, ModeReason::FENCE_BREACHED)) {
+                            set_mode(Mode::Number::LAND, ModeReason::FENCE_BREACHED);
+                        }
+                        break;
+                    case AC_Fence::Action::ALWAYS_LAND:
+                        // if always land option mode is specified, land
+                        set_mode(Mode::Number::LAND, ModeReason::FENCE_BREACHED);
+                        break;
+                    case AC_Fence::Action::SMART_RTL:
+                        // Try SmartRTL, if that fails, RTL, if that fails Land
+                        if (!set_mode(Mode::Number::SMART_RTL, ModeReason::FENCE_BREACHED)) {
+                            if (!set_mode(Mode::Number::RTL, ModeReason::FENCE_BREACHED)) {
+                                set_mode(Mode::Number::LAND, ModeReason::FENCE_BREACHED);
+                            }
+                        }
+                        break;
+                    case AC_Fence::Action::BRAKE:
+                        // Try Brake, if that fails Land
+                        if (!set_mode(Mode::Number::BRAKE, ModeReason::FENCE_BREACHED)) {
+                            set_mode(Mode::Number::LAND, ModeReason::FENCE_BREACHED);
+                        }
+                        break;
+                    case AC_Fence::Action::SMART_RTL_OR_LAND:
+                        // Try SmartRTL, if that fails, Land
+                        if (!set_mode(Mode::Number::SMART_RTL, ModeReason::FENCE_BREACHED)) {
+                            set_mode(Mode::Number::LAND, ModeReason::FENCE_BREACHED);
+                        }
+                        break;
                     }
-                }else{
-                    // if more than 100m outside the fence just force a land
-                    set_mode(LAND);
                 }
             }
         }
 
-        // log an error in the dataflash
-        Log_Write_Error(ERROR_SUBSYSTEM_FAILSAFE_FENCE, new_breaches);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::FAILSAFE_FENCE, LogErrorCode(fence_breaches.new_breaches));
     }
-
-    // record clearing of breach
-    if(orig_breaches != AC_FENCE_TYPE_NONE && fence.get_breaches() == AC_FENCE_TYPE_NONE) {
-        Log_Write_Error(ERROR_SUBSYSTEM_FAILSAFE_FENCE, ERROR_CODE_ERROR_RESOLVED);
-    }
-}
-
-// fence_send_mavlink_status - send fence status to ground station
-void Copter::fence_send_mavlink_status(mavlink_channel_t chan)
-{   
-    if (fence.enabled()) {
-        // traslate fence library breach types to mavlink breach types
-        uint8_t mavlink_breach_type = FENCE_BREACH_NONE;
-        uint8_t breaches = fence.get_breaches();
-        if ((breaches & AC_FENCE_TYPE_ALT_MAX) != 0) {
-            mavlink_breach_type = FENCE_BREACH_MAXALT;
-        }
-        if ((breaches & AC_FENCE_TYPE_CIRCLE) != 0) {
-            mavlink_breach_type = FENCE_BREACH_BOUNDARY;
-        }
-
-        // send status
-        mavlink_msg_fence_status_send(chan,
-                                      (int8_t)(fence.get_breaches()!=0),
-                                      fence.get_breach_count(),
-                                      mavlink_breach_type,
-                                      fence.get_breach_time());
-    }
+    fence_breaches.have_updates = false; // fence checking can now be processed again
 }
 
 #endif

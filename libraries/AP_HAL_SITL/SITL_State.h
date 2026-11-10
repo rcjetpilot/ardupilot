@@ -1,170 +1,115 @@
+#pragma once
 
-#ifndef __AP_HAL_SITL_STATE_H__
-#define __AP_HAL_SITL_STATE_H__
-
-#include <AP_HAL.h>
+#include <AP_HAL/AP_HAL.h>
+#include <AP_HAL/utility/RingBuffer.h>
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 
-#include <AP_HAL_SITL.h>
-#include "AP_HAL_SITL_Namespace.h"
-#include "HAL_SITL_Class.h"
+#include "SITL_State_common.h"
 
-#include <sys/types.h>
-#include <sys/socket.h>
+#if defined(HAL_BUILD_AP_PERIPH)
+#include "SITL_Periph_State.h"
+#else
+
 #include <netinet/in.h>
-#include <netinet/udp.h>
-#include <arpa/inet.h>
-
-#include "../AP_Baro/AP_Baro.h"
-#include "../AP_InertialSensor/AP_InertialSensor.h"
-#include "../AP_Compass/Compass.h"
-#include "../AP_OpticalFlow/AP_OpticalFlow.h"
-#include "../AP_Terrain/AP_Terrain.h"
-#include "../SITL/SITL.h"
-#include "../SITL/SIM_Gimbal.h"
 
 class HAL_SITL;
 
-class HALSITL::SITL_State {
-    friend class HALSITL::SITLScheduler;
+class HALSITL::SITL_State : public SITL_State_Common {
+    friend class HALSITL::Scheduler;
+    friend class HALSITL::Util;
+    friend class HALSITL::GPIO;
 public:
-    void init(int argc, char * const argv[]);
+    void init(int argc, char * const argv[]) override;
 
-    enum vehicle_type {
-        ArduCopter,
-        APMrover2,
-        ArduPlane
-    };
-
-    int gps_pipe(void);
-    int gps2_pipe(void);
-    ssize_t gps_read(int fd, void *buf, size_t count);
-    uint16_t pwm_output[SITL_NUM_CHANNELS];
-    uint16_t last_pwm_output[SITL_NUM_CHANNELS];
-    uint16_t pwm_input[8];
-    bool new_rc_input;
     void loop_hook(void);
     uint16_t base_port(void) const {
         return _base_port;
     }
 
-    // simulated airspeed, sonar and battery monitor
-    uint16_t sonar_pin_value;    // pin 0
-    uint16_t airspeed_pin_value; // pin 1
-    uint16_t voltage_pin_value;  // pin 13
-    uint16_t current_pin_value;  // pin 12
+    // paths for UART devices, one per SERIALn including --serial9
+    const char *_serial_path[AP_HAL::HAL::num_serial] {
+        "tcp:0:wait",
+        "tcp:2",
+        "tcp:3",
+        "GPS1",
+        "GPS2",
+        "tcp:5",
+        "tcp:6",
+        "tcp:7",
+        "tcp:8",
+        "tcp:9",
+    };
+    ObjectArray<struct AP_Param::defaults_table_struct> cmdline_param{100};
 
-    // return TCP client address for uartC
-    const char *get_client_address(void) const { return _client_address; }
+    /* parse a home location string */
+    static bool parse_home(const char *home_str,
+                           Location &loc,
+                           float &yaw_degrees);
+
+    /* lookup a location in locations.txt */
+    static bool lookup_location(const char *home_str,
+                                Location &loc,
+                                float &yaw_degrees);
+    
+    uint8_t get_instance() const { return _instance; }
 
 private:
     void _parse_command_line(int argc, char * const argv[]);
-    void _set_param_default(const char *parm);
     void _usage(void);
-    void _sitl_setup(void);
-    void _setup_fdm(void);
+
+    /*
+      look up the model/vehicle in @ROMFS/vehicleinfo.json and set
+      defaults_path to the matching comma-separated @ROMFS/... list
+      so AP_Param can load them. Returns the model to simulate, which
+      is the frame's "model" field when it has one.
+    */
+    const char *resolve_defaults_from_romfs(const char *model_str, const char *vehicle_str);
+
+    /* dump @ROMFS/vehicleinfo.json to stdout (for --list-models) */
+    static void list_models_and_exit(void);
+
+    void _sitl_setup();
     void _setup_timer(void);
     void _setup_adc(void);
 
-    float height_agl(void);
-    void _update_barometer(float height);
-    void _update_compass(float rollDeg, float pitchDeg, float yawDeg);
-    void _update_flow(void);
+    void set_height_agl(void);
+    void _update_rangefinder();
+    void _set_signal_handlers(void) const;
 
-    struct gps_data {
-        double latitude;
-        double longitude;
-        float altitude;
-        double speedN;
-        double speedE;
-        double speedD;
-        bool have_lock;
-    };
-
-#define MAX_GPS_DELAY 100
-    gps_data _gps_data[MAX_GPS_DELAY];
-
-    bool _gps_has_basestation_position;
-    gps_data _gps_basestation_data;
-    void _gps_write(const uint8_t *p, uint16_t size);
-    void _gps_send_ubx(uint8_t msgid, uint8_t *buf, uint16_t size);
-    void _update_gps_ubx(const struct gps_data *d);
-    void _update_gps_mtk(const struct gps_data *d);
-    void _update_gps_mtk16(const struct gps_data *d);
-    void _update_gps_mtk19(const struct gps_data *d);
-    uint16_t _gps_nmea_checksum(const char *s);
-    void _gps_nmea_printf(const char *fmt, ...);
-    void _update_gps_nmea(const struct gps_data *d);
-    void _sbp_send_message(uint16_t msg_type, uint16_t sender_id, uint8_t len, uint8_t *payload);
-    void _update_gps_sbp(const struct gps_data *d);
-
-    void _update_gps(double latitude, double longitude, float altitude,
-                     double speedN, double speedE, double speedD, bool have_lock);
-
-    void _update_ins(float roll, 	float pitch, 	float yaw,		// Relative to earth
-                     double rollRate, 	double pitchRate,double yawRate,	// Local to plane
-                     double xAccel, 	double yAccel, 	double zAccel,		// Local to plane
-                     float airspeed,	float altitude);
-    void _fdm_input(void);
+    void _update_airspeed(float eas);
     void _fdm_input_local(void);
-    void _simulator_servos(Aircraft::sitl_input &input);
-    void _simulator_output(bool synthetic_clock_mode);
-    void _apply_servo_filter(float deltat);
-    uint16_t _airspeed_sensor(float airspeed);
-    uint16_t _ground_sonar();
-    float _gyro_drift(void);
-    float _rand_float(void);
-    Vector3f _rand_vec3f(void);
+    void _output_to_flightgear(void);
+    void _simulator_servos(struct sitl_input &input);
     void _fdm_input_step(void);
 
     void wait_clock(uint64_t wait_time_usec);
 
-    pthread_t _fdm_thread_ctx;
-    void _fdm_thread(void);
-
     // internal state
-    enum vehicle_type _vehicle;
-    uint16_t _framerate;
     uint8_t _instance;
     uint16_t _base_port;
-    struct sockaddr_in _rcout_addr;
     pid_t _parent_pid;
     uint32_t _update_count;
-    bool _motors_on;
 
-    AP_Baro *_barometer;
-    AP_InertialSensor *_ins;
-    SITLScheduler *_scheduler;
-    Compass *_compass;
-    OpticalFlow *_optical_flow;
-    AP_Terrain *_terrain;
+    Scheduler *_scheduler;
 
-    int _sitl_fd;
-    SITL *_sitl;
-    uint16_t _rcout_port;
-    uint16_t _simin_port;
-    float _current;
+    uint16_t _rcin_port;
+    const char *_rcin_path;
+    uint16_t _fg_view_port;
+    uint16_t _irlock_port;
 
-    bool _synthetic_clock_mode;
+    bool _use_fg_view;
 
-    const char *_fdm_address;
+    bool _use_dds_sim_time = false;
+    
+    const char *_fg_address;
+
+    // simulation model name as given on the command line, for
+    // model-specific flightgear view output
+    const char *_model_str = nullptr;
 
     // delay buffer variables
-    static const uint8_t mag_buffer_length = 250;
     static const uint8_t wind_buffer_length = 50;
-    static const uint8_t baro_buffer_length = 50;
-
-    // magnetometer delay buffer variables
-    struct readings_mag {
-        uint32_t time;
-        Vector3f data;
-    };
-    uint8_t store_index_mag;
-    uint32_t last_store_time_mag;
-    VectorN<readings_mag,mag_buffer_length> buffer_mag;
-    uint32_t time_delta_mag;
-    uint32_t delayed_time_mag;
 
     // airspeed sensor delay buffer variables
     struct readings_wind {
@@ -177,28 +122,57 @@ private:
     uint32_t time_delta_wind;
     uint32_t delayed_time_wind;
 
-    // barometer delay buffer variables
-    struct readings_baro {
-        uint32_t time;
-        float data;
-    };
-    uint8_t store_index_baro;
-    uint32_t last_store_time_baro;
-    VectorN<readings_baro,baro_buffer_length> buffer_baro;
-    uint32_t time_delta_baro;
-    uint32_t delayed_time_baro;
+    // returns a voltage between 0V to 5V which should appear as the
+    // voltage from the sensor
+    float _sonar_pin_voltage() const;
 
-    // internal SITL model
-    Aircraft *sitl_model;
+    // multicast state
+    int servo_in_fd = -1;
+    struct sockaddr_in mc_dest;
 
-    // simulated gimbal
-    bool enable_gimbal;
-    Gimbal *gimbal;
+    // simulated-peripheral lockstep: do not advance the simulation
+    // past a multicast state packet until every registered peripheral
+    // has acknowledged consuming it
+    bool _periph_lockstep;
+    static const uint8_t MAX_MCAST_PERIPHS = 16;
+    // a peripheral silent for this long in wall-clock time is presumed
+    // dead; the harness SIGTERMs them with no notice, so there is no
+    // goodbye to wait for.  Must sit above real starvation (tens of
+    // milliseconds) and below the test framework's own timeouts
+    static const uint64_t PERIPH_EVICT_TIMEOUT_MS = 1000;
+    // how long an evicted peer is held out of the registry, so that
+    // acks still queued from before its death cannot re-register it
+    static const uint64_t PERIPH_REJOIN_COOLDOWN_MS = 500;
+    // how long to block for acks before re-examining the registry for
+    // peripherals which have passed the eviction timeout
+    static const uint8_t PERIPH_ACK_POLL_MS = 5;
+    struct mcast_periph {
+        struct sockaddr_in addr;
+        uint64_t last_ack_us;    // state timestamp the periph has acked
+        uint64_t last_heard_ms;  // wall-clock time we last heard from it
+    } mcast_periphs[MAX_MCAST_PERIPHS];
+    uint8_t num_mcast_periphs;
+    // recently-evicted peers; their stale queued acks must not
+    // re-register them (a dead peripheral's last acks can still be in
+    // the socket queue when it is evicted)
+    struct evicted_periph {
+        struct sockaddr_in addr;
+        uint64_t evicted_ms;
+    } evicted_periphs[MAX_MCAST_PERIPHS];
+    uint8_t num_evicted_periphs;
+    bool _warned_ack_size;  // we have complained about a bad-sized reply
+    void handle_periph_ack(const struct sitl_mcast_ack &ack, ssize_t len, const struct sockaddr_in &src);
+    void wait_periph_acks(uint64_t timestamp_us);
+    static uint64_t wall_millis(void);
 
-    // TCP address to connect uartC to
-    const char *_client_address;
+    // send out SITL state as UDP multicast
+    void multicast_state_open(void);
+    void multicast_state_send(void);
+    void multicast_servo_update(struct sitl_input &input);
+
+    uint16_t mc_servo[SITL_NUM_CHANNELS];
+    void check_servo_input(void);
 };
 
+#endif // defined(HAL_BUILD_AP_PERIPH)
 #endif // CONFIG_HAL_BOARD == HAL_BOARD_SITL
-#endif // __AP_HAL_SITL_STATE_H__
-

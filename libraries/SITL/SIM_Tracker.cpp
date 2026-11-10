@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,18 +17,15 @@
 */
 
 #include "SIM_Tracker.h"
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+
 #include <stdio.h>
 
-Tracker::Tracker(const char *home_str, const char *frame_str) :
-Aircraft(home_str, frame_str)
-{}
-
+namespace SITL {
 
 /*
   update function for position (normal) servos.
 */
-void Tracker::update_position_servos(float delta_time, float &yaw_rate, float &pitch_rate)
+void Tracker::update_position_servos(float delta_time, float &yaw_rate, float &pitch_rate) const
 {
     float pitch_target = pitch_input*pitch_range;
     float yaw_target = yaw_input*yaw_range;
@@ -40,10 +36,10 @@ void Tracker::update_position_servos(float delta_time, float &yaw_rate, float &p
 
 /*
   update function for onoff servos.
-  These servos either move at a constant rate or are still 
+  These servos either move at a constant rate or are still
   Returns (yaw_rate,pitch_rate) tuple
 */
-void Tracker::update_onoff_servos(float &yaw_rate, float &pitch_rate)
+void Tracker::update_onoff_servos(float &yaw_rate, float &pitch_rate) const
 {
     if (fabsf(yaw_input) < 0.1) {
         yaw_rate = 0;
@@ -69,13 +65,22 @@ void Tracker::update(const struct sitl_input &input)
 {
     // how much time has passed?
     float delta_time = frame_time_us * 1.0e-6f;
-    
-    float yaw_rate, pitch_rate;
 
-    yaw_input = (input.servos[0]-1500)/500.0f;
-    pitch_input = (input.servos[1]-1500)/500.0f;
+    float yaw_rate = 0.0f, pitch_rate = 0.0f;
 
-    // implement yaw and pitch limits
+    // a zero PWM means the channel is not being driven at all, which is what
+    // the vehicle code emits while the servos are not being output to.  Taking
+    // that as a demand normalises it to -3.0, commanding the axis hard to one
+    // end of its range; hold position instead, as an undriven servo would
+    const bool yaw_driven = input.servos[0] != 0;
+    const bool pitch_driven = input.servos[1] != 0;
+    if (yaw_driven) {
+        yaw_input = (input.servos[0]-1500)/500.0f;
+    }
+    if (pitch_driven) {
+        pitch_input = (input.servos[1]-1500)/500.0f;
+    }
+
     float r, p, y;
     dcm.to_euler(&r, &p, &y);
 
@@ -88,6 +93,22 @@ void Tracker::update(const struct sitl_input &input)
     if (yaw_current_relative < -180) {
         yaw_current_relative += 360;
     }
+
+    if (onoff) {
+        update_onoff_servos(yaw_rate, pitch_rate);
+    } else {
+        update_position_servos(delta_time, yaw_rate, pitch_rate);
+    }
+
+    if (!yaw_driven) {
+        yaw_rate = 0;
+    }
+    if (!pitch_driven) {
+        pitch_rate = 0;
+    }
+
+    // implement the yaw and pitch limits.  These must be applied after the
+    // servo update, which is what sets the rates
     if (yaw_rate > 0 && yaw_current_relative >= yaw_range) {
         yaw_rate = 0;
     }
@@ -101,13 +122,6 @@ void Tracker::update(const struct sitl_input &input)
         pitch_rate = 0;
     }
 
-    if (onoff) {
-        update_onoff_servos(yaw_rate, pitch_rate);
-    } else {
-        update_position_servos(delta_time, yaw_rate, pitch_rate);
-    }
-
-
     // keep it level
     float roll_rate = 0 - roll_current;
 
@@ -115,8 +129,8 @@ void Tracker::update(const struct sitl_input &input)
         last_debug_us = time_now_us;
         printf("roll=%.1f pitch=%.1f yaw=%.1f rates=%.1f/%.1f/%.1f in=%.3f,%.3f\n",
                roll_current,
-               pitch_current_relative, 
-               yaw_current_relative, 
+               pitch_current_relative,
+               yaw_current_relative,
                roll_rate, pitch_rate, yaw_rate,
                yaw_input, pitch_input);
     }
@@ -132,7 +146,16 @@ void Tracker::update(const struct sitl_input &input)
 
     // new velocity vector
     velocity_ef.zero();
+    // allow for changes in physics step
+    adjust_frame_time(constrain_float(sitl->loop_rate_hz, rate_hz-1, rate_hz+1));
+
     update_position();
+    time_advance();
+
+    // update magnetic field
+    update_mag_field_bf();
+
+    update_battery();
 }
 
-#endif
+} // namespace SITL

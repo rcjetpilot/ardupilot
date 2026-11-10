@@ -1,5 +1,5 @@
-#ifndef __AP_AHRS_DCM_H__
-#define __AP_AHRS_DCM_H__
+#pragma once
+
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -21,113 +21,128 @@
  *
  */
 
-class AP_AHRS_DCM : public AP_AHRS
-{
+#include <AP_InertialSensor/AP_InertialSensor.h>
+#include "AP_AHRS_config.h"
+
+#if AP_AHRS_DCM_ENABLED
+
+#include "AP_AHRS_Backend.h"
+
+class AP_AHRS_DCM : public AP_AHRS_Backend {
 public:
-    // Constructors
-    AP_AHRS_DCM(AP_InertialSensor &ins, AP_Baro &baro, AP_GPS &gps) :
-    AP_AHRS(ins, baro, gps),
-        _omega_I_sum_time(0.0f),
-        _renorm_val_sum(0.0f),
-        _renorm_val_count(0),
-        _error_rp(1.0f),
-        _error_yaw(1.0f),
-        _gps_last_update(0),
-        _ra_deltat(0.0f),
-        _ra_sum_start(0),
-        _last_declination(0.0f),
-        _mag_earth(1,0),
-        _have_gps_lock(false),
-        _last_lat(0),
-        _last_lng(0),
-        _position_offset_north(0.0f),
-        _position_offset_east(0.0f),
-        _have_position(false),
-        _last_wind_time(0),
-        _last_airspeed(0.0f),
-        _last_consistent_heading(0),
-#if HAL_CPU_CLASS >= HAL_CPU_CLASS_75
-        _imu1_weight(0.5f),
-#endif
-        _last_failure_ms(0),
-        _last_startup_ms(0)
+
+    AP_AHRS_DCM(AP_Float &kp_yaw,
+                AP_Float &kp,
+                AP_Float &_gps_gain,
+                AP_Float &_beta,
+                AP_Enum<GPSUse> &gps_use,
+                AP_Int8 &gps_minsats)
+        : AP_AHRS_Backend(),
+          _kp_yaw(kp_yaw),
+          _kp(kp),
+          gps_gain(_gps_gain),
+          beta(_beta),
+          _gps_minsats(gps_minsats),
+          _gps_use(gps_use)
     {
         _dcm_matrix.identity();
-
-        // these are experimentally derived from the simulator
-        // with large drift levels
-        _ki = 0.0087f;
-        _ki_yaw = 0.01f;
     }
 
-    // return the smoothed gyro vector corrected for drift
-    const Vector3f &get_gyro(void) const {
-        return _omega;
-    }
+    /* Do not allow copies */
+    CLASS_NO_COPY(AP_AHRS_DCM);
 
-    // return rotation matrix representing rotaton from body to earth axes
-    const Matrix3f &get_dcm_matrix(void) const {
-        return _body_dcm_matrix;
-    }
-
-    // return the current drift correction integrator value
-    const Vector3f &get_gyro_drift(void) const {
-        return _omega_I;
-    }
+    const char *shortname() const override { return "DCM"; }
 
     // reset the current gyro drift estimate
     //  should be called if gyro offsets are recalculated
-    void reset_gyro_drift(void);
+    void reset_gyro_drift() override;
 
     // Methods
-    void            update(void);
-    void            reset(bool recover_eulers = false);
+    void            update() override;
+    void            get_results(Estimates &results) override;
+    void            reset() override { reset(false); }
 
-    // reset the current attitude, used on new IMU calibration
-    void reset_attitude(const float &roll, const float &pitch, const float &yaw);
-
-    // dead-reckoning support
-    virtual bool get_position(struct Location &loc) const;
-
-    // status reporting
-    float           get_error_rp(void) const { return _error_rp; } 
-    float           get_error_yaw(void) const { return _error_yaw; }
-
-    // return a wind estimation vector, in m/s
-    Vector3f wind_estimate(void) {
-        return _wind;
+    // return true if yaw has been initialised
+    bool yaw_initialised(void) const {
+        return have_initial_yaw;
     }
 
-    // return an airspeed estimate if available. return true
-    // if we have an estimate
-    bool airspeed_estimate(float *airspeed_ret) const;
+    // status reporting
+    float           get_error_rp() const {
+        return _error_rp;
+    }
+    float           get_error_yaw() const {
+        return _error_yaw;
+    }
 
-    bool            use_compass(void);
+    bool            use_compass() override;
 
-    void set_home(const Location &loc);
-    void estimate_wind(void);
+    // returns false if we fail arming checks, in which case the buffer will be populated with a failure message
+    // requires_position should be true if horizontal position configuration should be checked (not used)
+    bool pre_arm_check(bool requires_position, char *failure_msg, uint8_t failure_msg_len) const override {
+        return true;
+    }
 
-    // is the AHRS subsystem healthy?
-    bool healthy(void) const;
+    // relative-origin functions for fallback in AP_InertialNav
+    bool get_origin(Location &ret) const override;
 
-    // time that the AHRS has been up
-    uint32_t uptime_ms(void) const;
+    // return true if DCM has a yaw source
+    bool yaw_source_available(void) const;
 
 private:
-    float _ki;
-    float _ki_yaw;
+
+    // DCM maintains _last_airspeed_TAS in its drift correction; use it
+    // directly rather than recomputing from the published velocity:
+    bool synthetic_airspeed_EAS(const Estimates &results, float &airspeed_ret, AirspeedEstimateType &type) override;
+
+    // Get a derivative of the vertical position in m/s which is kinematically consistent with the vertical position is required by some control loops.
+    // This is different to the vertical velocity from the EKF which is not always consistent with the vertical position due to the various errors that are being corrected for.
+    bool get_vert_pos_rate_D(float &velocity) const;
+
+    bool get_velocity_NED(Vector3f &vec) const;
+    // return a ground velocity estimate in meters/second, in North/East order
+    Vector2f groundspeed_vector();
+
+    // dead-reckoning support
+    bool get_location(Location &loc) const;
+
+    // settable parameters
+    AP_Float &_kp_yaw;
+    AP_Float &_kp;
+    AP_Float &gps_gain;
+
+    AP_Float &beta;
+
+    AP_Int8 &_gps_minsats;
+
+    AP_Enum<GPSUse> &_gps_use;
+
+    // these are experimentally derived from the simulator
+    // with large drift levels
+    static constexpr float _ki = 0.0087f;
+    static constexpr float _ki_yaw = 0.01f;
+
+    // accelerometer values in the earth frame in m/s/s
+    Vector3f        _accel_ef;
 
     // Methods
-    void            matrix_update(float _G_Dt);
+    void            matrix_update(void);
     void            normalize(void);
     void            check_matrix(void);
     bool            renorm(Vector3f const &a, Vector3f &result);
     void            drift_correction(float deltat);
     void            drift_correction_yaw(void);
-    float           yaw_error_compass();
-    void            euler_angles(void);
+    float           yaw_error_compass(class Compass &compass);
     bool            have_gps(void) const;
     bool            use_fast_gains(void) const;
+    void            backup_attitude(void);
+
+    // internal reset function.  Called externally, we never reset the
+    // DCM matrix from the eulers.  Called internally we may.
+    void            reset(bool recover_eulers);
+
+    // update our wind estimate from the latest GPS velocity and attitude:
+    void estimate_wind(void);
 
     // primary representation of attitude of board used for all inertial calculations
     Matrix3f _dcm_matrix;
@@ -135,12 +150,20 @@ private:
     // primary representation of attitude of flight vehicle body
     Matrix3f _body_dcm_matrix;
 
+    // euler angles - used for recovering if the DCM
+    // matrix becomes ill-conditioned and watchdog storage
+    float roll;
+    float pitch;
+    float yaw;
+
     Vector3f _omega_P;                          // accel Omega proportional correction
     Vector3f _omega_yaw_P;                      // proportional yaw correction
     Vector3f _omega_I;                          // Omega Integrator correction
     Vector3f _omega_I_sum;
     float _omega_I_sum_time;
     Vector3f _omega;                            // Corrected Gyro_Vector data
+
+    bool have_initial_yaw; // true if the yaw value has been initialised with a reference
 
     // variables to cope with delaying the GA sum to match GPS lag
     Vector3f ra_delayed(uint8_t instance, const Vector3f &ra);
@@ -152,14 +175,27 @@ private:
     // P term yaw gain based on rate of change of horiz velocity
     float           _yaw_gain(void) const;
 
+    /* returns true if attitude should be corrected from GPS-derived
+     * velocity-deltas.  We turn this off for Copter and other similar
+     * vehicles while the vehicle is disarmed to avoid the HUD bobbing
+     * around while the vehicle is disarmed.
+     */
+    bool should_correct_centrifugal() const;
+
     // state to support status reporting
     float _renorm_val_sum;
     uint16_t _renorm_val_count;
-    float _error_rp;
-    float _error_yaw;
+    float _error_rp{1.0f};
+    float _error_yaw{1.0f};
+
+    // time in microseconds of last compass update
+    uint32_t _compass_last_update;
 
     // time in millis when we last got a GPS heading
     uint32_t _gps_last_update;
+
+    // GPS message time of the sample last fed to the wind estimator:
+    uint32_t _last_wind_gps_ms;
 
     // state of accel drift correction
     Vector3f _ra_sum[INS_MAX_INSTANCES];
@@ -167,9 +203,12 @@ private:
     float _ra_deltat;
     uint32_t _ra_sum_start;
 
+    // which accelerometer instance is active
+    uint8_t _active_accel_instance;
+
     // the earths magnetic field
     float _last_declination;
-    Vector2f _mag_earth;
+    Vector2f _mag_earth{1, 0};
 
     // whether we have GPS lock
     bool _have_gps_lock;
@@ -177,6 +216,7 @@ private:
     // the lat/lng where we last had GPS lock
     int32_t _last_lat;
     int32_t _last_lng;
+    uint32_t _last_pos_ms;
 
     // position offset from last GPS lock
     float _position_offset_north;
@@ -185,25 +225,28 @@ private:
     // whether we have a position estimate
     bool _have_position;
 
-    // support for wind estimation
-    Vector3f _last_fuse;
-    Vector3f _last_vel;
-    uint32_t _last_wind_time;
-    float _last_airspeed;
     uint32_t _last_consistent_heading;
-
-    // estimated wind in m/s
-    Vector3f _wind;
-
-#if HAL_CPU_CLASS >= HAL_CPU_CLASS_75
-    float _imu1_weight;
-#endif
 
     // last time AHRS failed in milliseconds
     uint32_t _last_failure_ms;
 
     // time when DCM was last reset
     uint32_t _last_startup_ms;
+
+    // last origin we returned, for DCM fallback from EKF
+    Location last_origin;
+
+    // Declare filter states for HPF and LPF used by complementary
+    // filter in AP_AHRS::groundspeed_vector
+    Vector2f _lp; // ground vector low-pass filter
+    Vector2f _hp; // ground vector high-pass filter
+    Vector2f _lastGndVelADS; // previous HPF input
+
+    // pre-calculated trig cache:
+    float _sin_yaw;
+    float _cos_yaw;
+
+    uint32_t last_log_ms;
 };
 
-#endif // __AP_AHRS_DCM_H__
+#endif  // AP_AHRS_DCM_ENABLED

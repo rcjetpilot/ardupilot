@@ -1,50 +1,46 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
+#pragma once
 
-#ifndef __AP_ROLL_CONTROLLER_H__
-#define __AP_ROLL_CONTROLLER_H__
+#include "AP_FW_Controller.h"
 
-#include <AP_AHRS.h>
-#include <AP_Common.h>
-#include <AP_Vehicle.h>
-#include <AP_AutoTune.h>
-#include <DataFlash.h>
-#include <AP_Math.h>
-
-class AP_RollController {
+class AP_RollController : public AP_FW_Controller
+{
 public:
-	AP_RollController(AP_AHRS &ahrs, const AP_Vehicle::FixedWing &parms, DataFlash_Class &_dataflash) :
-		aparm(parms),
-        autotune(gains, AP_AutoTune::AUTOTUNE_ROLL, parms, _dataflash),
-        _ahrs(ahrs)
-    { 
-		AP_Param::setup_object_defaults(this, var_info);
-	}
+    AP_RollController(const AP_FixedWing &parms);
 
-	int32_t get_rate_out(float desired_rate, float scaler);
-	int32_t get_servo_out(int32_t angle_err, float scaler, bool disable_integrator);
+    /* Do not allow copies */
+    CLASS_NO_COPY(AP_RollController);
 
-	void reset_I();
+    static const struct AP_Param::GroupInfo var_info[];
 
-    void autotune_start(void) { autotune.start(); }
-    void autotune_restore(void) { autotune.stop(); }
 
-    const       DataFlash_Class::PID_Info& get_pid_info(void) const { return _pid_info; }
-
-	static const struct AP_Param::GroupInfo var_info[];
+    /*
+      set the in_recovery flag, which is used during a VTOL upset recovery
+      this flag only lasts one loop
+    */
+    void set_in_recovery(void) {
+        in_recovery = true;
+    }
 
 private:
-	const AP_Vehicle::FixedWing &aparm;
-    AP_AutoTune::ATGains gains;
-    AP_AutoTune autotune;
-	uint32_t _last_t;
-	float _last_out;
+    float run_axis_rate_control(float desired_rate_degs, float scaler, bool disable_integrator, bool ground_mode) override;
 
-    DataFlash_Class::PID_Info _pid_info;
+    // Return true if the airspeed should be considered as under speed
+    bool is_underspeed() const override;
 
-	int32_t _get_rate_out(float desired_rate, float scaler, bool disable_integrator);
+    // Return the measured roll angle in degrees
+    float get_measured_angle_deg() const override;
 
-	AP_AHRS &_ahrs;
+    // Return the measured roll rate in radians per second
+    float get_measured_rate_rads() const override;
 
+    // Return true if rate limits should be applied
+    bool should_apply_rate_limits() const override;
+
+    // Return positive rate limit in deg per second, zero if disabled
+    float get_positive_rate_limit_degs() const override;
+
+    // Return negative rate limit in deg per second (as a positive number) zero if disabled
+    float get_negative_rate_limit_degs() const override;
+
+    bool in_recovery;
 };
-
-#endif // __AP_ROLL_CONTROLLER_H__
